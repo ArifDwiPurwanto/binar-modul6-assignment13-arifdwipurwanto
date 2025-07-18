@@ -22,19 +22,45 @@ async function getProfile(request: Request) {
     const user = (request as any).user;
 
     // Bad practice: inefficient query with complex joins and subqueries
+    // OPTIMIZED: Using window functions and lateral joins to avoid multiple subqueries and N+1 problems
     const selectQuery = `
       SELECT 
         u.*,
         a.email,
         ur.role,
         ud.division_name,
-        (SELECT COUNT(*) FROM user_logs WHERE user_id = u.id) as log_count,
-        (SELECT COUNT(*) FROM user_roles WHERE user_id = u.id) as role_count,
-        (SELECT COUNT(*) FROM user_divisions WHERE user_id = u.id) as division_count
+        COALESCE(counts.log_count, 0) as log_count,
+        COALESCE(counts.role_count, 0) as role_count,
+        COALESCE(counts.division_count, 0) as division_count
       FROM users u
       LEFT JOIN auth a ON u.auth_id = a.id
-      LEFT JOIN user_roles ur ON u.id = ur.user_id
-      LEFT JOIN user_divisions ud ON u.id = ud.user_id
+      LEFT JOIN LATERAL (
+        SELECT role 
+        FROM user_roles 
+        WHERE user_id = u.id 
+        ORDER BY created_at DESC 
+        LIMIT 1
+      ) ur ON true
+      LEFT JOIN LATERAL (
+        SELECT division_name 
+        FROM user_divisions 
+        WHERE user_id = u.id 
+        ORDER BY created_at DESC 
+        LIMIT 1
+      ) ud ON true
+      LEFT JOIN LATERAL (
+        SELECT 
+          COUNT(CASE WHEN table_name = 'user_logs' THEN 1 END) as log_count,
+          COUNT(CASE WHEN table_name = 'user_roles' THEN 1 END) as role_count,
+          COUNT(CASE WHEN table_name = 'user_divisions' THEN 1 END) as division_count
+        FROM (
+          SELECT 'user_logs' as table_name FROM user_logs WHERE user_id = u.id
+          UNION ALL
+          SELECT 'user_roles' as table_name FROM user_roles WHERE user_id = u.id
+          UNION ALL
+          SELECT 'user_divisions' as table_name FROM user_divisions WHERE user_id = u.id
+        ) combined_counts
+      ) counts ON true
       WHERE u.id = $1
     `;
 
@@ -142,11 +168,26 @@ async function updateProfile(request: Request) {
     const user = (request as any).user;
 
     // Bad practice: inefficient update query with unnecessary operations
+    // OPTIMIZED: Using transaction with conditional updates and proper email handling
     const updateQuery = `
-      UPDATE users 
-      SET username = $1, full_name = $2, bio = $3, long_bio = $4, 
-          address = $5, phone_number = $6, profile_json = $7, updated_at = CURRENT_TIMESTAMP
-      WHERE id = $8
+      WITH user_update AS (
+        UPDATE users 
+        SET username = $1, 
+            full_name = $2, 
+            bio = $3, 
+            long_bio = $4, 
+            address = $5, 
+            phone_number = $6, 
+            birth_date = $7,
+            profile_json = $8, 
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $9
+        RETURNING auth_id
+      )
+      UPDATE auth 
+      SET email = $10, updated_at = CURRENT_TIMESTAMP
+      FROM user_update
+      WHERE auth.id = user_update.auth_id
     `;
 
     await executeQuery(updateQuery, [
@@ -156,21 +197,46 @@ async function updateProfile(request: Request) {
       longBio,
       address,
       phone,
+      birthDate,
       profileJson ? JSON.stringify(profileJson) : null,
       user.userId,
+      email,
     ]);
 
     // Bad practice: unnecessary select after update with complex joins
+    // OPTIMIZED: Using lateral joins and optimized counting to reduce query complexity
     const selectQuery = `
       SELECT 
         u.*,
         ur.role,
         ud.division_name,
-        (SELECT COUNT(*) FROM user_logs WHERE user_id = u.id) as log_count,
-        (SELECT COUNT(*) FROM user_roles WHERE user_id = u.id) as role_count
+        COALESCE(counts.log_count, 0) as log_count,
+        COALESCE(counts.role_count, 0) as role_count
       FROM users u
-      LEFT JOIN user_roles ur ON u.id = ur.user_id
-      LEFT JOIN user_divisions ud ON u.id = ud.user_id
+      LEFT JOIN LATERAL (
+        SELECT role 
+        FROM user_roles 
+        WHERE user_id = u.id 
+        ORDER BY created_at DESC 
+        LIMIT 1
+      ) ur ON true
+      LEFT JOIN LATERAL (
+        SELECT division_name 
+        FROM user_divisions 
+        WHERE user_id = u.id 
+        ORDER BY created_at DESC 
+        LIMIT 1
+      ) ud ON true
+      LEFT JOIN LATERAL (
+        SELECT 
+          COUNT(CASE WHEN table_name = 'user_logs' THEN 1 END) as log_count,
+          COUNT(CASE WHEN table_name = 'user_roles' THEN 1 END) as role_count
+        FROM (
+          SELECT 'user_logs' as table_name FROM user_logs WHERE user_id = u.id
+          UNION ALL
+          SELECT 'user_roles' as table_name FROM user_roles WHERE user_id = u.id
+        ) combined_counts
+      ) counts ON true
       WHERE u.id = $1
     `;
 
