@@ -13,12 +13,34 @@ export async function GET(request: Request) {
   const route = "/api/users";
 
   try {
-    // Bad practice: extract query params manually without proper parsing
+    // Extract query params with proper parsing
     const url = new URL(request.url);
     const divisionFilter = url.searchParams.get("division");
+    const page = parseInt(url.searchParams.get("page") || "1", 10);
+    const pageSize = parseInt(url.searchParams.get("pageSize") || "20", 10);
+    const offset = (page - 1) * pageSize;
 
-    // Bad practice: extremely inefficient query with multiple joins, subqueries, and no pagination
+    // Optimized query: Use window functions instead of subqueries for better performance
     let query = `
+      WITH user_stats AS (
+        SELECT 
+          user_id,
+          COUNT(*) as log_count,
+          COUNT(*) FILTER (WHERE action = 'login') as login_count,
+          COUNT(*) FILTER (WHERE action = 'update_profile') as update_count
+        FROM user_logs
+        GROUP BY user_id
+      ),
+      user_role_stats AS (
+        SELECT user_id, COUNT(*) as role_count
+        FROM user_roles
+        GROUP BY user_id
+      ),
+      user_division_stats AS (
+        SELECT user_id, COUNT(*) as division_count
+        FROM user_divisions
+        GROUP BY user_id
+      )
       SELECT 
         u.id,
         u.username,
@@ -34,59 +56,53 @@ export async function GET(request: Request) {
         a.email,
         ur.role,
         ud.division_name,
-        -- Bad practice: unnecessary subqueries for demo
-        (SELECT COUNT(*) FROM users) as total_users,
-        (SELECT COUNT(*) FROM users WHERE created_at > u.created_at) as newer_users,
-        (SELECT COUNT(*) FROM user_logs WHERE user_id = u.id) as log_count,
-        (SELECT COUNT(*) FROM user_roles WHERE user_id = u.id) as role_count,
-        (SELECT COUNT(*) FROM user_divisions WHERE user_id = u.id) as division_count,
-        -- Bad practice: more unnecessary subqueries
-        (SELECT COUNT(*) FROM user_logs WHERE action = 'login' AND user_id = u.id) as login_count,
-        (SELECT COUNT(*) FROM user_logs WHERE action = 'update_profile' AND user_id = u.id) as update_count,
-        -- Bad practice: complex nested subqueries
-        (SELECT COUNT(*) FROM user_logs ul 
-         WHERE ul.user_id = u.id 
-         AND ul.created_at > (SELECT MAX(created_at) FROM user_logs WHERE user_id = u.id) - INTERVAL '30 days') as recent_logs,
-        -- Bad practice: unnecessary string operations
-        CONCAT(u.full_name, ' (', COALESCE(ur.role, 'no role'), ')') as display_name,
-        CASE 
-          WHEN u.bio IS NULL THEN 'No bio available'
-          WHEN u.bio = '' THEN 'Empty bio'
-          ELSE u.bio
-        END as bio_display,
-        -- Bad practice: complex JSON operations (fixed for PostgreSQL compatibility)
-        CASE 
-          WHEN u.profile_json IS NOT NULL THEN 
-            CASE 
-              WHEN u.profile_json->'social_media' IS NOT NULL THEN
-                CASE 
-                  WHEN u.profile_json->'social_media'->>'instagram' IS NOT NULL THEN
-                    u.profile_json->'social_media'->>'instagram'
-                  ELSE 'No Instagram'
-                END
-              ELSE 'No social media'
-            END
-          ELSE 'No profile data'
-        END as instagram_handle
+        COALESCE(us.log_count, 0) as log_count,
+        COALESCE(urs.role_count, 0) as role_count,
+        COALESCE(uds.division_count, 0) as division_count,
+        COALESCE(us.login_count, 0) as login_count,
+        COALESCE(us.update_count, 0) as update_count
       FROM users u
       LEFT JOIN auth a ON u.auth_id = a.id
       LEFT JOIN user_roles ur ON u.id = ur.user_id
       LEFT JOIN user_divisions ud ON u.id = ud.user_id
-      -- Bad practice: unnecessary cross join for demo
-      CROSS JOIN (SELECT 1 as dummy) d
+      LEFT JOIN user_stats us ON u.id = us.user_id
+      LEFT JOIN user_role_stats urs ON u.id = urs.user_id
+      LEFT JOIN user_division_stats uds ON u.id = uds.user_id
     `;
 
-    // Bad practice: inefficient filtering without proper indexing
+    const params: any[] = [];
+    let whereClause = "";
+    
     if (divisionFilter && divisionFilter !== "all") {
-      query += ` WHERE ud.division_name = '${divisionFilter}'`;
+      whereClause = ` WHERE ud.division_name = $1`;
+      params.push(divisionFilter);
     }
 
-    query += ` ORDER BY u.created_at DESC`;
+    query += whereClause;
+    query += ` ORDER BY u.created_at DESC, u.id DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    params.push(pageSize, offset);
+
+    // Get total count for pagination (optimized separate query)
+    let countQuery = `
+      SELECT COUNT(DISTINCT u.id) as total
+      FROM users u
+      LEFT JOIN user_divisions ud ON u.id = ud.user_id
+    ` + whereClause;
+    
+    const countParams = divisionFilter && divisionFilter !== "all" ? [divisionFilter] : [];
 
     const dbStart = Date.now();
-    const result = await executeQuery(query);
+    
+    // Execute both queries in parallel for better performance
+    const [result, countResult] = await Promise.all([
+      executeQuery(query, params),
+      executeQuery(countQuery, countParams)
+    ]);
+    
     const dbDuration = (Date.now() - dbStart) / 1000;
     databaseQueryDuration.observe({ query_type: "users_query" }, dbDuration);
+    
+    const totalCount = parseInt(countResult.rows[0]?.total || "0", 10);
 
     // Bad practice: processing all data in memory with complex transformations
     const users = result.rows.map((user: any) => {
@@ -202,7 +218,10 @@ export async function GET(request: Request) {
     console.timeEnd("Users API Execution");
     return NextResponse.json({
       users,
-      total: users.length,
+      total: totalCount,
+      page,
+      pageSize,
+      totalPages: Math.ceil(totalCount / pageSize),
       activeUsers: activeUserCount,
       seniorUsers: seniorUserCount,
       usersWithCompleteProfiles: usersWithCompleteProfileCount,
