@@ -1,20 +1,29 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { toast } from "react-hot-toast";
 import Navbar from "@/components/Navbar";
 import { useAuth } from "@/hooks/useAuth";
 import { TokenExpirationWarning } from "@/components/TokenExpirationWarning";
 import { SessionTimer } from "@/components/SessionTimer";
-import { Todo, CreateTodoRequest, TodoStats, TodoFilters } from "@/lib/types";
+import TodoItem from "@/components/TodoItem";
+import TodoForm from "@/components/TodoForm";
+import TodoStats from "@/components/TodoStats";
+import {
+  Todo,
+  CreateTodoRequest,
+  TodoStats as TodoStatsType,
+  TodoFilters,
+} from "@/lib/types";
 
 export default function TodosPage() {
   const [todos, setTodos] = useState<Todo[]>([]);
-  const [stats, setStats] = useState<TodoStats | null>(null);
+  const [stats, setStats] = useState<TodoStatsType | null>(null);
   const [loading, setIsLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showCreateForm, setShowCreateForm] = useState(false);
-  const [editingTodo, setEditingTodo] = useState<Todo | null>(null);
+  const [showStats, setShowStats] = useState(true);
+
   const [filters, setFilters] = useState<TodoFilters>({
     status: "",
     priority: "",
@@ -26,25 +35,13 @@ export default function TodosPage() {
     total: 0,
     totalPages: 0,
   });
-  const [newTodo, setNewTodo] = useState<CreateTodoRequest>({
-    title: "",
-    description: "",
-    priority: "medium",
-    status: "pending",
-    dueDate: "",
-  });
   const { requireAuth } = useAuth();
 
   useEffect(() => {
     requireAuth("/login");
   }, [requireAuth]);
 
-  useEffect(() => {
-    fetchTodos();
-    fetchStats();
-  }, [filters, pagination.page]);
-
-  const fetchTodos = async () => {
+  const fetchTodos = useCallback(async () => {
     try {
       const token = localStorage.getItem("token");
       const params = new URLSearchParams({
@@ -78,9 +75,9 @@ export default function TodosPage() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [filters, pagination.page, pagination.limit]);
 
-  const fetchStats = async () => {
+  const fetchStats = useCallback(async () => {
     try {
       const token = localStorage.getItem("token");
       const response = await fetch("/api/todos/stats", {
@@ -96,15 +93,14 @@ export default function TodosPage() {
     } catch (error) {
       console.error("Fetch stats error:", error);
     }
-  };
+  }, []);
 
-  const handleCreateTodo = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newTodo.title.trim()) {
-      toast.error("Title is required");
-      return;
-    }
+  useEffect(() => {
+    fetchTodos();
+    fetchStats();
+  }, [fetchTodos, fetchStats]);
 
+  const handleCreateTodo = async (todoData: CreateTodoRequest) => {
     setSaving(true);
     try {
       const token = localStorage.getItem("token");
@@ -114,19 +110,12 @@ export default function TodosPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify(newTodo),
+        body: JSON.stringify(todoData),
       });
 
       if (response.ok) {
         const data = await response.json();
         setTodos((prev) => [data.data, ...prev]);
-        setNewTodo({
-          title: "",
-          description: "",
-          priority: "medium",
-          status: "pending",
-          dueDate: "",
-        });
         setShowCreateForm(false);
         toast.success("Todo created successfully");
         fetchStats();
@@ -157,7 +146,6 @@ export default function TodosPage() {
       if (response.ok) {
         const data = await response.json();
         setTodos((prev) => prev.map((t) => (t.id === todo.id ? data.data : t)));
-        setEditingTodo(null);
         toast.success("Todo updated successfully");
         fetchStats();
       } else {
@@ -221,37 +209,6 @@ export default function TodosPage() {
     }
   };
 
-  const getPriorityColor = (priority: string) => {
-    switch (priority) {
-      case "high":
-        return "bg-red-100 text-red-800";
-      case "medium":
-        return "bg-yellow-100 text-yellow-800";
-      case "low":
-        return "bg-green-100 text-green-800";
-      default:
-        return "bg-gray-100 text-gray-800";
-    }
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "completed":
-        return "bg-green-100 text-green-800";
-      case "in-progress":
-        return "bg-blue-100 text-blue-800";
-      case "pending":
-        return "bg-gray-100 text-gray-800";
-      default:
-        return "bg-gray-100 text-gray-800";
-    }
-  };
-
-  const isOverdue = (dueDate: string) => {
-    if (!dueDate) return false;
-    return new Date(dueDate) < new Date();
-  };
-
   if (loading) {
     return (
       <>
@@ -276,49 +233,35 @@ export default function TodosPage() {
           <div className="mb-8">
             <div className="flex justify-between items-center">
               <div>
-                <h1 className="text-3xl font-bold text-gray-900">My Todos</h1>
+                <h1 className="text-3xl font-bold text-gray-900">
+                  📋 My Todos
+                </h1>
                 <p className="mt-2 text-gray-600">
-                  Manage your tasks and stay organized
+                  Manage your tasks and stay organized with our powerful todo
+                  management system
                 </p>
               </div>
               <div className="flex items-center space-x-4">
                 <SessionTimer />
                 <button
-                  onClick={() => setShowCreateForm(true)}
-                  className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 transition-colors"
+                  onClick={() => setShowStats(!showStats)}
+                  className="bg-gray-600 text-white px-4 py-2 rounded-md hover:bg-gray-700 transition-colors"
                 >
-                  Add Todo
+                  {showStats ? "📊 Hide Stats" : "📊 Show Stats"}
+                </button>
+                <button
+                  onClick={() => setShowCreateForm(true)}
+                  className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 transition-colors flex items-center"
+                >
+                  ➕ Add Todo
                 </button>
               </div>
             </div>
 
             {/* Statistics */}
-            {stats && (
-              <div className="mt-6 grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="bg-white p-4 rounded-lg shadow">
-                  <div className="text-2xl font-bold text-indigo-600">
-                    {stats.total}
-                  </div>
-                  <div className="text-sm text-gray-600">Total Tasks</div>
-                </div>
-                <div className="bg-white p-4 rounded-lg shadow">
-                  <div className="text-2xl font-bold text-yellow-600">
-                    {stats.pending}
-                  </div>
-                  <div className="text-sm text-gray-600">Pending</div>
-                </div>
-                <div className="bg-white p-4 rounded-lg shadow">
-                  <div className="text-2xl font-bold text-blue-600">
-                    {stats.inProgress}
-                  </div>
-                  <div className="text-sm text-gray-600">In Progress</div>
-                </div>
-                <div className="bg-white p-4 rounded-lg shadow">
-                  <div className="text-2xl font-bold text-green-600">
-                    {stats.completed}
-                  </div>
-                  <div className="text-sm text-gray-600">Completed</div>
-                </div>
+            {stats && showStats && (
+              <div className="mt-6">
+                <TodoStats stats={stats} />
               </div>
             )}
           </div>
@@ -392,257 +335,44 @@ export default function TodosPage() {
 
           {/* Create Todo Form */}
           {showCreateForm && (
-            <div className="bg-white p-6 rounded-lg shadow mb-6">
-              <h3 className="text-lg font-medium text-gray-900 mb-4">
-                Create New Todo
-              </h3>
-              <form onSubmit={handleCreateTodo} className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Title *
-                    </label>
-                    <input
-                      type="text"
-                      value={newTodo.title}
-                      onChange={(e) =>
-                        setNewTodo((prev) => ({
-                          ...prev,
-                          title: e.target.value,
-                        }))
-                      }
-                      className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                      placeholder="Enter todo title"
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Due Date
-                    </label>
-                    <input
-                      type="date"
-                      value={newTodo.dueDate}
-                      onChange={(e) =>
-                        setNewTodo((prev) => ({
-                          ...prev,
-                          dueDate: e.target.value,
-                        }))
-                      }
-                      className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Priority
-                    </label>
-                    <select
-                      value={newTodo.priority}
-                      onChange={(e) =>
-                        setNewTodo((prev) => ({
-                          ...prev,
-                          priority: e.target.value as any,
-                        }))
-                      }
-                      className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                    >
-                      <option value="low">Low</option>
-                      <option value="medium">Medium</option>
-                      <option value="high">High</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Status
-                    </label>
-                    <select
-                      value={newTodo.status}
-                      onChange={(e) =>
-                        setNewTodo((prev) => ({
-                          ...prev,
-                          status: e.target.value as any,
-                        }))
-                      }
-                      className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                    >
-                      <option value="pending">Pending</option>
-                      <option value="in-progress">In Progress</option>
-                      <option value="completed">Completed</option>
-                    </select>
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Description
-                  </label>
-                  <textarea
-                    rows={3}
-                    value={newTodo.description}
-                    onChange={(e) =>
-                      setNewTodo((prev) => ({
-                        ...prev,
-                        description: e.target.value,
-                      }))
-                    }
-                    className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                    placeholder="Enter todo description"
-                  />
-                </div>
-                <div className="flex justify-end space-x-3">
-                  <button
-                    type="button"
-                    onClick={() => setShowCreateForm(false)}
-                    className="bg-gray-300 text-gray-700 px-4 py-2 rounded-md hover:bg-gray-400 transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={saving}
-                    className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 transition-colors disabled:opacity-50"
-                  >
-                    {saving ? "Creating..." : "Create Todo"}
-                  </button>
-                </div>
-              </form>
+            <div className="mb-6">
+              <TodoForm
+                onSubmit={handleCreateTodo}
+                onCancel={() => setShowCreateForm(false)}
+                isLoading={saving}
+                title="Create New Todo"
+              />
             </div>
           )}
 
           {/* Todos List */}
-          <div className="bg-white rounded-lg shadow">
+          <div className="space-y-4">
             {todos.length === 0 ? (
-              <div className="p-8 text-center">
-                <p className="text-gray-500">
-                  No todos found. Create your first todo!
+              <div className="bg-white p-8 rounded-lg shadow text-center">
+                <div className="text-6xl mb-4">📝</div>
+                <h3 className="text-lg font-medium text-gray-900 mb-2">
+                  No todos found
+                </h3>
+                <p className="text-gray-500 mb-4">
+                  Get started by creating your first todo!
                 </p>
+                <button
+                  onClick={() => setShowCreateForm(true)}
+                  className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 transition-colors"
+                >
+                  ➕ Create Your First Todo
+                </button>
               </div>
             ) : (
-              <div className="divide-y divide-gray-200">
+              <div className="space-y-4">
                 {todos.map((todo) => (
-                  <div key={todo.id} className="p-6 hover:bg-gray-50">
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1">
-                        <div className="flex items-center space-x-3 mb-2">
-                          <h3 className="text-lg font-medium text-gray-900">
-                            {editingTodo?.id === todo.id ? (
-                              <input
-                                type="text"
-                                value={editingTodo.title}
-                                onChange={(e) =>
-                                  setEditingTodo((prev) =>
-                                    prev
-                                      ? { ...prev, title: e.target.value }
-                                      : null
-                                  )
-                                }
-                                className="border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                              />
-                            ) : (
-                              todo.title
-                            )}
-                          </h3>
-                          <span
-                            className={`px-2 py-1 text-xs font-medium rounded-full ${getPriorityColor(
-                              todo.priority
-                            )}`}
-                          >
-                            {todo.priority}
-                          </span>
-                          <span
-                            className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(
-                              todo.status
-                            )}`}
-                          >
-                            {todo.status}
-                          </span>
-                          {todo.dueDate && isOverdue(todo.dueDate) && (
-                            <span className="px-2 py-1 text-xs font-medium rounded-full bg-red-100 text-red-800">
-                              Overdue
-                            </span>
-                          )}
-                        </div>
-
-                        {editingTodo?.id === todo.id ? (
-                          <textarea
-                            value={editingTodo.description || ""}
-                            onChange={(e) =>
-                              setEditingTodo((prev) =>
-                                prev
-                                  ? { ...prev, description: e.target.value }
-                                  : null
-                              )
-                            }
-                            className="w-full border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 mb-2"
-                            rows={2}
-                          />
-                        ) : (
-                          <p className="text-gray-600 mb-2">
-                            {todo.description}
-                          </p>
-                        )}
-
-                        <div className="flex items-center space-x-4 text-sm text-gray-500">
-                          <span>
-                            Created:{" "}
-                            {new Date(todo.createdAt).toLocaleDateString()}
-                          </span>
-                          {todo.dueDate && (
-                            <span>
-                              Due: {new Date(todo.dueDate).toLocaleDateString()}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="flex items-center space-x-2">
-                        {editingTodo?.id === todo.id ? (
-                          <>
-                            <button
-                              onClick={() => handleUpdateTodo(editingTodo)}
-                              className="text-green-600 hover:text-green-800"
-                            >
-                              Save
-                            </button>
-                            <button
-                              onClick={() => setEditingTodo(null)}
-                              className="text-gray-600 hover:text-gray-800"
-                            >
-                              Cancel
-                            </button>
-                          </>
-                        ) : (
-                          <>
-                            <button
-                              onClick={() => setEditingTodo(todo)}
-                              className="text-indigo-600 hover:text-indigo-800"
-                            >
-                              Edit
-                            </button>
-                            <select
-                              value={todo.status}
-                              onChange={(e) =>
-                                handleStatusChange(
-                                  todo.id,
-                                  e.target.value as Todo["status"]
-                                )
-                              }
-                              className="text-sm border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                            >
-                              <option value="pending">Pending</option>
-                              <option value="in-progress">In Progress</option>
-                              <option value="completed">Completed</option>
-                            </select>
-                            <button
-                              onClick={() => handleDeleteTodo(todo.id)}
-                              className="text-red-600 hover:text-red-800"
-                            >
-                              Delete
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
+                  <TodoItem
+                    key={todo.id}
+                    todo={todo}
+                    onUpdate={handleUpdateTodo}
+                    onDelete={handleDeleteTodo}
+                    onStatusChange={handleStatusChange}
+                  />
                 ))}
               </div>
             )}

@@ -6,7 +6,7 @@ async function getUserById(request: Request) {
   console.time("Get User by ID Execution");
 
   try {
-    // Extract user ID from URL path
+    // Extract user ID from URL path with proper validation
     const url = new URL(request.url);
     const pathParts = url.pathname.split("/");
     const userId = pathParts[pathParts.length - 1];
@@ -19,6 +19,7 @@ async function getUserById(request: Request) {
       );
     }
 
+    // Optimized query with LIMIT 1 and proper indexing considerations
     const query = `
       SELECT 
         u.id,
@@ -26,11 +27,19 @@ async function getUserById(request: Request) {
         u.full_name,
         u.birth_date,
         u.bio,
+        u.long_bio,
+        u.profile_json,
+        u.address,
+        u.phone_number,
+        u.created_at,
+        u.updated_at,
         a.email,
-        ur.role
+        ur.role,
+        ud.division_name
       FROM users u
-      INNER JOIN auth a ON u.auth_id = a.id
+      LEFT JOIN auth a ON u.auth_id = a.id
       LEFT JOIN user_roles ur ON u.id = ur.user_id
+      LEFT JOIN user_divisions ud ON u.id = ud.user_id
       WHERE u.id = $1
       LIMIT 1
     `;
@@ -53,7 +62,14 @@ async function getUserById(request: Request) {
         email: user.email,
         birthDate: user.birth_date,
         bio: user.bio,
+        longBio: user.long_bio,
+        profileJson: user.profile_json,
+        address: user.address,
+        phoneNumber: user.phone_number,
+        createdAt: user.created_at,
+        updatedAt: user.updated_at,
         role: user.role,
+        division: user.division_name,
       },
     });
   } catch (error) {
@@ -66,5 +82,4 @@ async function getUserById(request: Request) {
   }
 }
 
-// Bad practice: wrapping with auth middleware
 export const GET = authMiddleware(getUserById);
